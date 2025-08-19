@@ -1,0 +1,971 @@
+---
+title: "CBPP 804 Data Analysis"
+author: "Gabriel Toscano"
+date: "2025-03-06"
+output: html_document
+---
+
+## Ideas
+- Look at by state
+  - Revenue by phase 
+  - Revenue by energy type
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Installing dependencies, if needed
+# install.packages('ggplot2')
+# install.packages('dplyr')
+# install.packages('tidyverse')
+#install.packages('gt')
+#install.packages('stringr')
+
+#loading packages
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+#for number formatting
+library(scales)
+#for table graphics
+library(gt)
+#for string manipulation
+library(stringr)
+```
+
+```{r loading data echo=FALSE}
+all_data <- read_csv('/Users/gabrieltoscano/Documents/GitHub/804_data_analysis/804_data/WP_24-01_Dataset-data-only.csv')
+
+# Checking variable types, numbers should be numbers
+str(all_data)
+
+all_data <- all_data %>%
+  # Rename the column first
+  rename(Recipient = `Type
+(Taxing Jurisdiction, or local Fund)`) %>%
+  
+  # Standardize values correctly
+  mutate(
+    Recipient = case_when(
+      str_detect(Recipient, "MUNI|Muni|Municipality/Township") ~ "Township or Municipality",
+      str_detect(Recipient, "SCHOOL|School District|School") ~ "School or District",
+      str_detect(Recipient, "OTHER") ~ "Other",
+      str_detect(Recipient, "COUNTY") ~ "County",
+      TRUE ~ Recipient  # Keep other values unchanged
+    ),
+    
+    # Convert `Amount ($2022)` to numeric
+    `Amount ($2022)` = as.numeric(gsub("\\..*", "", gsub(",", "", `Amount ($2022)`))),
+    
+    # Standardize `Energy type (simplified)`
+    `Energy type (simplified)` = str_replace(`Energy type (simplified)`, "Oil and Gas", "Oil and gas")
+  ) %>%
+  
+  # Remove NA values in `Amount ($2022)`
+  filter(!is.na(`Amount ($2022)`))
+
+
+# Ignore electric when comparing between renewables and non-renewables, since it's more about transmission
+# Ignore multiple since we don't know the source/type of energy
+# Also ignoring anything before 2012 and 2022 since we don't have complete data for the year
+renewable_types <- c("Renewable", "Solar", "Wind")
+all_data_no_electric <- all_data %>%
+  filter(`Energy type (simplified)` != "Electric") %>% 
+  filter(`Energy type (simplified)` != "Multiple") %>% 
+  # Also ignoring anything before 2012 and 2022 since we don't have complete data for the year
+  filter(`Fiscal Year` >= 2012) %>% 
+  #Adding a new column for renewables
+  mutate(Renewable = `Energy type (simplified)` %in% renewable_types)
+
+
+
+```
+
+```{r nice_groupings}
+
+#Adding up revenue by year, by state
+revenue_by_year <- all_data %>%
+  group_by(`Fiscal Year`, State) %>%  
+  summarise(Revenue = sum(`Amount ($2022)`, na.rm = TRUE)) %>%
+  ungroup()
+
+#Case Study States
+selected_states <- c("TX", "NM", "CO")
+
+#Adding revenue by year, by state, by type (renwable/non renewable)
+# Create the summarized dataframe
+state_year_revenue <- all_data_no_electric %>%
+  group_by(State, `Fiscal Year`, Renewable) %>%
+  summarise(Total_Revenue = sum(`Amount ($2022)`, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = Renewable, values_from = Total_Revenue, names_prefix = "Revenue_") %>%
+  rename(Renewable_Revenue = Revenue_TRUE, NonRenewable_Revenue = Revenue_FALSE)
+
+#Looking at only our three case study states
+filtered_state_year_revenue <- state_year_revenue %>% 
+  filter(`State` %in% selected_states)
+
+
+```
+
+# Filter for the three states and summarize yearly revenue
+
+```{r case_studies_summary}
+
+
+# Filter data for the selected states
+filtered_states <- revenue_by_year %>%
+  filter(`State` %in% selected_states)
+
+
+
+colorado_rev_year <- filtered_states %>% 
+  filter(`State` == "CO")
+
+
+ggplot(colorado_rev_year, aes(x = factor(`Fiscal Year`), y = Revenue, fill = factor(`Fiscal Year`))) +  # Map fill to Year
+  geom_col() +
+  geom_text(aes(label = scales::comma(Revenue)),  # Format numbers with commas
+            position = position_stack(vjust = 0.5),  # Center text inside bars
+            color = "black", fontface = "bold", size = 4) +  # Adjust text size & color
+  scale_fill_viridis_d(option = "B", begin = 0.9, end = 0.9) +
+  scale_y_continuous(
+    labels = scales::comma,    # Format labels with commas
+    breaks = seq(0, max(colorado_rev_year$Revenue / 1e6, na.rm = TRUE) + 200, by = 200))+ 
+  labs(
+    x = "Year", 
+    y = "Revenue (2022 Adjusted USD)", 
+    title = "Colorado Energy Tax Revenue By Year",
+    subtitle = "Resources for the Future 2022 Data"
+  ) +
+  theme(
+    legend.position = 'none', 
+    plot.title = element_text(face = "bold", margin = margin(t = 10, b=5)),
+    plot.subtitle = element_text(margin = margin(b = 20)),
+    axis.title.y = element_text(face = "bold", angle = 0, hjust = 0, vjust = 0.5, margin = margin(l = 10, r = 10)),
+    axis.title.x = element_text(face = "bold", margin = margin(t = 10, b = 10))
+  ) +
+  coord_flip()  # Flip axes for readability
+
+
+```
+## Getting revenues for 3 states
+```{r}
+# Loop through each state and create a plot
+for (state in selected_states) {
+  
+  # Filter data for the specific state
+  state_rev_year <- filtered_states %>%
+    filter(State == state) %>% 
+    filter(`Fiscal Year` > 2011 & `Fiscal Year` < 2022)
+  
+  # Generate bar plot
+  state_plot <- ggplot(state_rev_year, aes(x = factor(`Fiscal Year`), y = Revenue / 1e6, fill = factor(`Fiscal Year`))) +
+    geom_col() +
+    geom_text(aes(label = scales::comma(Revenue / 1e6)),  
+              position = position_stack(vjust = 0.5),  
+              color = "black", fontface = "bold", size = 4) +  
+    scale_fill_viridis_d(option = "B", begin = 0.9, end = 0.9) +  
+    scale_y_continuous(
+      labels = scales::comma,    
+      breaks = seq(0, max(state_rev_year$Revenue / 1e6, na.rm = TRUE) + 200, by = 200)
+    ) +  
+    labs(
+      x = "Year", 
+      y = "Revenue (2022 Adjusted USD)", 
+      title = paste(state, "Energy Tax Revenue By Year"),
+      subtitle = "Resources for the Future 2022 Data"
+    ) +
+    theme(
+      legend.position = 'none',  
+      plot.title = element_text(face = "bold", margin = margin(t = 10, b = 5)),
+      plot.subtitle = element_text(margin = margin(b = 20)),
+      axis.title.y = element_text(face = "bold", angle = 0, hjust = 0, vjust = 0.5, margin = margin(l = 10, r = 10)),
+      axis.title.x = element_text(face = "bold", margin = margin(t = 10, b = 10))
+    ) +
+    coord_flip()  # Flip axes for readability
+
+  # Save the plot for each state
+  ggsave(filename = paste0("figures/", state, "_energy_tax_revenue_.jpg"), 
+         plot = state_plot, width = 10, height = 6, dpi = 300)
+  
+  # Remove temp plot variable
+  rm(state_plot)
+}
+```
+
+
+# Comparing revenues by type, by state, by year Line Chart
+- Deprecating for now
+```{r trend over time by type}
+# 
+# # Loop through each selected state and save a separate plot
+# for (state in selected_states) {
+#   
+#   # Determine the max value for the y-axis scale dynamically
+#   max_value <- max(all_data_no_electric %>% 
+#                      filter(State == state) %>% 
+#                      pull(`Amount ($2022)`) / 1e6, na.rm = TRUE)
+#   
+#   temp_plot <- all_data_no_electric %>%
+#     filter(State == state) %>%
+#     ggplot(aes(x = factor(`Fiscal Year`), y = `Amount ($2022)` / 1e6, color = `Energy type (simplified)`)) +
+#     geom_line(size = 5) +  #line thickness
+#     facet_wrap(~ State) +
+#     scale_y_continuous(breaks = seq(0, max_value, by = 20)) +  # Tick marks every 20 million
+#     labs(title = paste("Tax Revenue Trends by Energy Source in", state, "(2012-2022)"),
+#          x = "Year",
+#          y = "Revenue (Million, 2022 Adjusted USD)",
+#          color = "Energy Source") +
+#     theme_minimal() +
+#     coord_flip()
+# 
+#   # Save the plot as a high-resolution JPEG
+#   ggsave(filename = paste0("figures/", state,"_tax_trends_by_type_stackedbar_graph.jpg"), 
+#          plot = temp_plot, width = 10, height = 6, dpi = 300)
+#   
+#   # Remove temporary plot variable
+#   rm(temp_plot)
+# }
+
+```
+
+# STATE Revenue trends by energy type over time
+```{r}
+# Convert Fiscal Year to numeric
+all_data_no_electric <- all_data_no_electric %>%
+  mutate(`Fiscal Year` = as.numeric(`Fiscal Year`))
+
+# Summarize revenue by State, Year, and Energy Type
+df_summary <- all_data_no_electric %>%
+  group_by(State, `Fiscal Year`, `Energy type (simplified)`) %>%
+  summarise(total_revenue = sum(`Amount ($2022)`, na.rm = TRUE), .groups = "drop") %>%
+  rename(year = `Fiscal Year`, energy_type = `Energy type (simplified)`)
+
+# OPTIONAL: restrict to years 2012–2021
+df_summary <- df_summary %>% filter(year >= 2012 & year <= 2021)
+
+# Define list of states to loop through (replace with your actual state list)
+selected_states <- c("CO", "TX", "NM")  # Example states
+
+# Loop to generate and save individual plots
+for (state in selected_states) {
+  
+  # Get the max Y value dynamically for consistent scaling
+  max_value <- df_summary %>%
+    filter(State == state) %>%
+    pull(total_revenue) %>%
+    max(na.rm = TRUE)# Convert to millions
+  
+  # Create the plot
+  temp_plot <- df_summary %>%
+    filter(State == state) %>%
+    ggplot(aes(x = year, y = total_revenue, color = energy_type)) +
+    geom_line(size = 1) +
+    geom_point(size = 2.5, alpha = 0.8) +
+    # geom_smooth(method = "loess", se = FALSE, linetype = "dashed", size = 1) +
+    facet_wrap(~ State) +
+    scale_x_continuous(breaks = 2012:2021) +  # X-axis: yearly ticks
+    # scale_y_continuous(breaks = seq(0, max_value, by = 50), labels = comma) +  # Y-axis: 50M ticks
+    scale_y_continuous(breaks = seq(0, 1000, by = 50), labels = comma) +  # Y-axis: 50M ticks
+    labs(
+      title = paste("Tax Revenue Trends by Energy Source in", state, "(2012–2021)"),
+      subtitle = "Resources for the Future 2022 Data",
+      x = "Year",
+      y = "Tax Revenue (2022 Adjusted USD)",
+      color = "Energy Source"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      plot.title = element_text(face = "bold")
+    )
+  
+  # Save the plot as a high-resolution JPEG
+  ggsave(filename = paste0("figures/", state, "_tax_trends_time_series.jpg"), 
+         plot = temp_plot, width = 10, height = 6, dpi = 300)
+
+  # Clean up
+  rm(temp_plot)
+}
+
+```
+
+#NATIONAL revenue trends by energy type
+```{r}
+# Aggregate tax revenue at the national level by year and energy type
+df_national_summary <- all_data_no_electric %>%
+  filter(`Fiscal Year` >= 2012 & `Fiscal Year` <= 2021) %>%
+  group_by(`Fiscal Year`, `Energy type (simplified)`) %>%
+  summarise(total_revenue = sum(`Amount ($2022)`, na.rm = TRUE), .groups = "drop") %>%
+  rename(year = `Fiscal Year`, energy_type = `Energy type (simplified)`)
+
+# Get max revenue value to set y-axis scale
+max_value_national <- max(df_national_summary$total_revenue, na.rm = TRUE)
+
+# Create the national-level time series plot
+national_plot <- df_national_summary %>%
+  ggplot(aes(x = year, y = total_revenue, color = energy_type)) +
+  geom_line(size = 1) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  # geom_smooth(method = "loess", se = FALSE, linetype = "dashed", size = 1) +
+  scale_x_continuous(breaks = 2012:2021) +
+  scale_y_continuous(breaks = seq(0, max_value_national, by = 100), labels = comma) +
+  labs(
+    title = "National Tax Revenue Trends by Energy Source (2012–2021)",
+    subtitle = "Resources for the Future 2022 Data",
+    x = "Year",
+    y = "Tax Revenue (2022 Adjusted USD)",
+    color = "Energy Source"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(face = "bold")
+  )
+
+# Save the plot
+ggsave(filename = "figures/National_tax_trends_time_series.jpg", 
+       plot = national_plot, width = 10, height = 6, dpi = 300)
+```
+
+# Gap Analysis: Comparing Total Revenuews Bar Chart
+- Removing for now, keeping the table instead
+```{r comparing total revenues by renewable/non & year}
+
+
+# Loop through each state and save a separate plot
+# Loop through each state and save a separate grouped bar chart
+# for (state in selected_states) {
+#   state_plot <- all_data_no_electric %>%
+#     filter(State == state) %>%
+#     ggplot(aes(x = factor(`Fiscal Year`), y = `Amount ($2022)`/1e6, fill = Renewable)) +
+#     geom_bar(stat = "identity", position = position_dodge(width = 0.8)) +  # Grouped bars
+#     scale_fill_manual(values = c("TRUE" = "#228B22", "FALSE" = "gray"), labels = c("Non-Renewable", "Renewable")) +
+#     scale_y_continuous(breaks = seq(0, max(all_data_no_electric$`Amount ($2022)`/1e6, na.rm = TRUE), by = 20)) +  # Tick marks every 20 units
+#     labs(title = paste("Fossil vs. Clean Energy Tax Revenue in", state, "(2012-2022)"),
+#          x = "Year",
+#          y = "Total Tax Revenue ($2022 USD Millions)",
+#          fill = "Energy Source") +
+#     theme_minimal() +
+#     theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate x-axis labels for readability
+#     coord_flip()  # Flip axes for readability
+# 
+#   # Save the plot for each state
+#   ggsave(filename = paste0("figures/", state, "_revenue_difference_bargraph.jpg"), plot = state_plot, width = 8, height = 6, dpi = 300)
+# }
+```
+
+
+# Gap Analysis: Showing the comparison as a table
+```{r comparing total revenues by renewable/non & year table}
+
+
+filtered_state_year_revenue <- filtered_state_year_revenue %>%
+  mutate(Difference = Renewable_Revenue - NonRenewable_Revenue)
+# Create a table graphic
+# Loop through each state to create and save a table
+for (state in unique(filtered_state_year_revenue$State)) {
+  # Filter data for the specific state
+  state_table <- filtered_state_year_revenue %>%
+    filter(State == state) %>%
+    gt() %>%
+    tab_header(
+      title = paste(state, "Revenue Difference Renewable vs Non-Renewable"),
+      subtitle = "Difference = Renewable - Non-Renewable (USD)"
+    ) %>%
+    fmt_currency(columns = c(Renewable_Revenue, NonRenewable_Revenue, Difference), currency = "USD") %>%
+    cols_label(
+      State = "State",
+      `Fiscal Year` = "Year",
+      Renewable_Revenue = "Renewable ($)",
+      NonRenewable_Revenue = "Non-Renewable ($)",
+      Difference = "Difference ($)"
+    ) %>%
+    tab_options(
+      table.border.top.color = "white",  # Removes top border for cleaner look
+      table.border.bottom.color = "white",
+      table_body.hlines.color = "gray90", # Lighter horizontal lines
+      column_labels.border.top.color = "gray70",
+      column_labels.border.bottom.color = "gray70",
+      table.width = px(600),  # Adjust table width
+      data_row.padding = px(5)  # Adds whitespace between rows
+    ) %>%
+    tab_style(
+      style = cell_text(align = "left", v_align = "middle"),  # Adds spacing for readability
+      locations = cells_body()
+    ) %>%
+    tab_style(
+      style = cell_borders(sides = "left", color = "white", weight = px(15)),  # Adds whitespace left
+      locations = cells_body(columns = `Fiscal Year`)
+    ) %>%
+    tab_style(
+      style = cell_borders(sides = "right", color = "white", weight = px(15)),  # Adds whitespace right
+      locations = cells_body(columns = Difference)
+    )
+
+  # Save the table as an image
+  gtsave(state_table, filename = paste0("figures/", state,"_revenue_difference_table.png"))
+}
+
+
+```
+
+# Top 3 Energy types, and percent of revenue from each
+- Insight: Everyone is diversifying, the top tax revenue source decreases accross all states as a percentage of total revenues
+```{r}
+# Compute top 3 energy types per state and year
+top_energy_types_by_year <- all_data %>%
+  filter(State %in% selected_states) %>%
+  filter(`Fiscal Year` >= 2012) %>% 
+  filter(`Fiscal Year` < 2022) %>% 
+  group_by(State, `Fiscal Year`, `Energy type (simplified)`) %>%
+  summarise(Total_Revenue = sum(`Amount ($2022)`, na.rm = TRUE), .groups = "drop") %>%
+  group_by(State, `Fiscal Year`) %>%
+  mutate(
+    Rank = rank(-Total_Revenue, ties.method = "first"),  # Rank by highest revenue
+    Total_Year_Revenue = sum(Total_Revenue, na.rm = TRUE),  # Total revenue for the state & year
+    Percentage_of_Total = (Total_Revenue / Total_Year_Revenue) * 100  # Percentage contribution
+  ) %>%
+  filter(Rank <= 3) %>%  # Keep only top 3 energy types
+  arrange(State, `Fiscal Year`, Rank)  # Sort by state, year, and rank
+
+texas_top_energy_types_by_year <- top_energy_types_by_year %>% 
+  filter(State == "TX") %>% 
+  filter(Rank == 1)
+
+colorado_top_energy_types_by_year <- top_energy_types_by_year %>% 
+  filter(State == "CO")%>% 
+  filter(Rank == 1)
+
+newmexico_top_energy_types_by_year <- top_energy_types_by_year %>% 
+  filter(State == "NM")%>% 
+  filter(Rank == 1)
+
+
+```
+
+# Revenue by Energy type as a percentage of total revenue
+
+```{r}
+
+# Aggregate total revenue by energy type
+energy_type_revenue <- all_data %>%
+  group_by(`Energy type (simplified)`) %>%
+  summarize(Total_Revenue = sum(`Amount ($2022)`, na.rm = TRUE)) %>%
+  ungroup()
+
+# Calculate the total revenue across all types
+total_revenue_all <- sum(energy_type_revenue$Total_Revenue, na.rm = TRUE)
+
+# Add the total revenue and percentage contribution columns
+energy_type_revenue <- energy_type_revenue %>%
+  mutate(
+    Total_Revenue_All = total_revenue_all,
+    Percentage_of_Total = (Total_Revenue / Total_Revenue_All) * 100
+  ) %>% 
+    arrange(desc(Percentage_of_Total))
+
+# Save Total Revenue by Energy Type Table Accross all data
+energy_type_table <- energy_type_revenue %>%
+  gt() %>%
+  tab_header(
+    title = "Total Revenue by Energy Type",
+    subtitle = "National revenue for all energy types"
+  ) %>%
+  fmt_currency(columns = c(Total_Revenue, Total_Revenue_All), currency = "USD") %>%
+  fmt_number(columns = Percentage_of_Total, decimals = 2) %>%
+  cols_label(
+    `Energy type (simplified)` = "Energy Type",
+    Total_Revenue = "Total Revenue ($)",
+    Total_Revenue_All = "Total Revenue for All Types ($)",
+    Percentage_of_Total = "Total Share (%)"
+  )
+
+gtsave(energy_type_table, filename = "figures/national_energy_type_revenue.png")
+
+#YEARLY
+yearly_energy_revenue <- all_data %>%
+  group_by(`Fiscal Year`, `Energy type (simplified)`) %>%
+  summarize(Total_Revenue = sum(`Amount ($2022)`, na.rm = TRUE)) %>% 
+  ungroup()
+
+# Calculate total revenue for each year
+total_year_revenue <- yearly_energy_revenue %>%
+  group_by(`Fiscal Year`) %>%
+  summarize(Total_Year_Revenue = sum(Total_Revenue, na.rm = TRUE))
+
+# Merge total year revenue with energy type revenue
+yearly_energy_revenue <- yearly_energy_revenue %>%
+  left_join(total_year_revenue, by = "Fiscal Year") %>%
+  mutate(Percentage_of_Year = (Total_Revenue / Total_Year_Revenue) * 100)
+
+#Reorder
+yearly_energy_revenue <- yearly_energy_revenue %>%
+  group_by(`Fiscal Year`) %>%
+  arrange(`Fiscal Year`, desc(Percentage_of_Year)) %>%
+  ungroup()
+
+# Save Yearly Revenue by Energy Type Table
+yearly_energy_table <- yearly_energy_revenue %>%
+  gt() %>%
+  tab_header(
+    title = "Yearly Revenue by Energy Type (2012-2021)",
+    subtitle = "Summarized revenue per year for each energy type"
+  ) %>%
+  fmt_currency(columns = c(Total_Revenue, Total_Year_Revenue), currency = "USD") %>%
+  fmt_number(columns = Percentage_of_Year, decimals = 2) %>%
+  cols_label(
+    `Fiscal Year` = "Year",
+    `Energy type (simplified)` = "Energy Type",
+    Total_Revenue = "Total Revenue ($)",
+    Total_Year_Revenue = "Total Revenue for Year ($)",
+    Percentage_of_Year = "Yearly Share (%)"
+  )
+
+gtsave(yearly_energy_table, filename = "figures/nationa_yearly_revenue_by_energy_type.png")
+
+#CATEGORIES Renewable & non
+yearly_category_revenue <- all_data_no_electric %>%
+  group_by(`Fiscal Year`, Renewable) %>%
+  summarize(Total_Revenue = sum(`Amount ($2022)`, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Energy_Category = ifelse(Renewable, "Renewable", "Non-Renewable"))
+
+# Calculate total revenue for each year
+total_year_revenue_cat <- yearly_category_revenue %>%
+  group_by(`Fiscal Year`) %>%
+  summarize(Total_Year_Revenue = sum(Total_Revenue, na.rm = TRUE))
+
+# Merge with the yearly category revenue
+yearly_category_revenue <- yearly_category_revenue %>%
+  left_join(total_year_revenue_cat, by = "Fiscal Year") %>%
+  mutate(Percentage_of_Year = (Total_Revenue / Total_Year_Revenue) * 100)
+
+#Reorder and remove one of the columns
+yearly_category_revenue <- yearly_category_revenue %>%
+  select(-Renewable) %>%  # Removes the 'Renewable' column
+  group_by(`Fiscal Year`) %>%
+  arrange(`Fiscal Year`, desc(Percentage_of_Year)) %>%
+  ungroup()
+
+# Save Renewable vs. Non-Renewable Revenue Table
+yearly_category_table <- yearly_category_revenue %>%
+  gt() %>%
+  tab_header(
+    title = "Renewable vs. Non-Renewable Revenue by Year",
+    subtitle = "Summarized yearly revenue by renewable vs. non-renewable energy"
+  ) %>%
+  fmt_currency(columns = c(Total_Revenue, Total_Year_Revenue), currency = "USD") %>%
+  fmt_number(columns = Percentage_of_Year, decimals = 2) %>%
+  cols_label(
+    `Fiscal Year` = "Year",
+    Energy_Category = "Category",
+    Total_Revenue = "Total Revenue ($)",
+    Total_Year_Revenue = "Total Revenue for Year ($)",
+    Percentage_of_Year = "Yearly Share (%)"
+  )
+
+gtsave(yearly_category_table, filename = "figures/national_yearly_revenue_renewable_v_nonrenewable.png")
+```
+
+
+```{r}
+library(webshot2)
+##########################
+# 1. Total Revenue by Energy Type Table
+##########################
+# Aggregate total revenue by energy type
+energy_type_revenue <- all_data %>% 
+  group_by(`Energy type (simplified)`) %>% 
+  summarize(Total_Revenue = sum(`Amount ($2022)`, na.rm = TRUE)) %>% 
+  ungroup()
+
+# Calculate the total revenue across all types
+total_revenue_all <- sum(energy_type_revenue$Total_Revenue, na.rm = TRUE)
+
+# Add the total revenue and percentage contribution columns
+energy_type_revenue <- energy_type_revenue %>% 
+  mutate(
+    Total_Revenue_All = total_revenue_all,
+    Percentage_of_Total = (Total_Revenue / Total_Revenue_All) * 100
+  ) %>% 
+  arrange(desc(Percentage_of_Total))
+
+# Save Total Revenue by Energy Type Table Across all data
+energy_type_table <- energy_type_revenue %>% 
+  gt() %>% 
+  tab_header(
+    title = "Total Revenue by Energy Type",
+    subtitle = "National revenue for all energy types"
+  ) %>% 
+  fmt_currency(columns = c(Total_Revenue, Total_Revenue_All), currency = "USD") %>% 
+  fmt_number(columns = Percentage_of_Total, decimals = 2) %>% 
+  cols_label(
+    `Energy type (simplified)` = "Energy Type",
+    Total_Revenue = "Total Revenue ($)",
+    Total_Revenue_All = "Total Revenue for All Types ($)",
+    Percentage_of_Total = "Total Share (%)"
+  )
+
+gtsave(energy_type_table, filename = "figures/national_energy_type_revenue.png")
+
+##########################
+# 2. Yearly Revenue by Energy Type Table
+##########################
+yearly_energy_revenue <- all_data %>% 
+  group_by(`Fiscal Year`, `Energy type (simplified)`) %>% 
+  summarize(Total_Revenue = sum(`Amount ($2022)`, na.rm = TRUE)) %>%  
+  ungroup()
+
+# Calculate total revenue for each year
+total_year_revenue <- yearly_energy_revenue %>% 
+  group_by(`Fiscal Year`) %>% 
+  summarize(Total_Year_Revenue = sum(Total_Revenue, na.rm = TRUE))
+
+# Merge total year revenue with energy type revenue
+yearly_energy_revenue <- yearly_energy_revenue %>% 
+  left_join(total_year_revenue, by = "Fiscal Year") %>% 
+  mutate(Percentage_of_Year = (Total_Revenue / Total_Year_Revenue) * 100)
+
+# Reorder by Fiscal Year and descending share
+yearly_energy_revenue <- yearly_energy_revenue %>% 
+  group_by(`Fiscal Year`) %>% 
+  arrange(`Fiscal Year`, desc(Percentage_of_Year)) %>% 
+  ungroup()
+
+# Save Yearly Revenue by Energy Type Table
+yearly_energy_table <- yearly_energy_revenue %>% 
+  gt() %>% 
+  tab_header(
+    title = "Yearly Revenue by Energy Type (2012-2021)",
+    subtitle = "Summarized revenue per year for each energy type"
+  ) %>% 
+  fmt_currency(columns = c(Total_Revenue, Total_Year_Revenue), currency = "USD") %>% 
+  fmt_number(columns = Percentage_of_Year, decimals = 2) %>% 
+  cols_label(
+    `Fiscal Year` = "Year",
+    `Energy type (simplified)` = "Energy Type",
+    Total_Revenue = "Total Revenue ($)",
+    Total_Year_Revenue = "Total Revenue for Year ($)",
+    Percentage_of_Year = "Yearly Share (%)"
+  )
+
+# Note: Corrected a possible typo "nationa_yearly_revenue_by_energy_type.png" to "national_yearly_revenue_by_energy_type.png"
+gtsave(yearly_energy_table, filename = "figures/national_yearly_revenue_by_energy_type.png")
+
+##########################
+# 3. Renewable vs. Non-Renewable Revenue by Year Table
+##########################
+yearly_category_revenue <- all_data_no_electric %>% 
+  group_by(`Fiscal Year`, Renewable) %>% 
+  summarize(Total_Revenue = sum(`Amount ($2022)`, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  mutate(Energy_Category = ifelse(Renewable, "Renewable", "Non-Renewable"))
+
+# Calculate total revenue for each year
+total_year_revenue_cat <- yearly_category_revenue %>% 
+  group_by(`Fiscal Year`) %>% 
+  summarize(Total_Year_Revenue = sum(Total_Revenue, na.rm = TRUE))
+
+# Merge with the yearly category revenue
+yearly_category_revenue <- yearly_category_revenue %>% 
+  left_join(total_year_revenue_cat, by = "Fiscal Year") %>% 
+  mutate(Percentage_of_Year = (Total_Revenue / Total_Year_Revenue) * 100)
+
+# Reorder and remove the 'Renewable' column
+yearly_category_revenue <- yearly_category_revenue %>% 
+  select(-Renewable) %>%  
+  group_by(`Fiscal Year`) %>% 
+  arrange(`Fiscal Year`, desc(Percentage_of_Year)) %>% 
+  ungroup()
+
+# Save Renewable vs. Non-Renewable Revenue Table
+yearly_category_table <- yearly_category_revenue %>% 
+  gt() %>% 
+  tab_header(
+    title = "Renewable vs. Non-Renewable Revenue by Year",
+    subtitle = "Summarized yearly revenue by renewable vs. non-renewable energy"
+  ) %>% 
+  fmt_currency(columns = c(Total_Revenue, Total_Year_Revenue), currency = "USD") %>% 
+  fmt_number(columns = Percentage_of_Year, decimals = 2) %>% 
+  cols_label(
+    `Fiscal Year` = "Year",
+    Energy_Category = "Category",
+    Total_Revenue = "Total Revenue ($)",
+    Total_Year_Revenue = "Total Revenue for Year ($)",
+    Percentage_of_Year = "Yearly Share (%)"
+  )
+
+gtsave(yearly_category_table, filename = "figures/national_yearly_revenue_renewable_v_nonrenewable.png")
+```
+
+# Who gets the money?
+Let's look at the recipients by looking at the Recipient (`Type (Taxing Jurisdiction, or local Fund)`)
+```{r recipients}
+
+temp_plot <- ggplot(all_data, aes(x = Recipient, y = (all_data$`Amount ($2022)`), fill = Recipient)) +
+  geom_col() +
+  theme_minimal() +
+  labs(title = "National Tax Fund Distribution by Recipient Type",
+       subtitle='Resources for the Future 2022 Data',
+       y = "Amount (2022 Adjusted USD)") +
+  theme_minimal() +
+  
+  # Styling
+  theme(legend.position = 'none',  
+        plot.title = element_text(face = "bold", margin = margin(t = 10, b=5)), 
+        plot.subtitle = element_text(margin = margin(b = 20)), 
+        axis.title.y = element_text(face = "bold", angle = 0, hjust = 0, vjust = 0.5, margin = margin(l = 10, r = 10)), 
+        axis.title.x = element_text(face = "bold", margin = margin(t = 10, b = 10))
+  ) +
+  
+  # Adding tick marks every 20 million while ensuring spacing
+  #TODO add more tickmarks, not working for some reason
+
+
+  coord_flip()
+
+  # Save the plot for each state
+  ggsave(filename = paste0("figures/national_recipient_bargraph.jpg"), plot = temp_plot, width = 8, height = 6, dpi = 300)
+```
+
+## State-Level Recipients
+### Colorado
+```{r state level recipients Colorado}
+
+
+temp_plot <- all_data %>% 
+  filter(State == "CO") %>% 
+  ggplot(aes(x = Recipient, y = (`Amount ($2022)`), fill = Recipient)) +
+  geom_col() +
+  theme_minimal() +
+  labs(title = "Colorado Tax Fund Distribution by Recipient Type",
+       subtitle='2012 - 2022 Data',
+       y = "Revenue (2022 Adjusted USD)") +
+  theme_minimal() +
+  
+  # Styling
+  theme(legend.position = 'none',  
+        plot.title = element_text(face = "bold", margin = margin(t = 10, b=5)), 
+        plot.subtitle = element_text(margin = margin(b = 20)), 
+        axis.title.y = element_text(face = "bold", angle = 0, hjust = 0, vjust = 0.5, margin = margin(l = 10, r = 10)), 
+        axis.title.x = element_text(face = "bold", margin = margin(t = 10, b = 10))
+  ) +
+
+  coord_flip()
+  # Save the plot for each state
+  ggsave(filename = paste0("figures/CO_recipient_bargraph.jpg"), plot = temp_plot, width = 8, height = 6, dpi = 300)
+
+```
+
+### Texas
+```{r state level recipients Texas}
+
+
+temp_plot <- all_data %>% 
+  filter(State == "TX") %>% 
+  ggplot(aes(x = Recipient, y = (`Amount ($2022)`), fill = Recipient)) +
+  geom_col() +
+  theme_minimal() +
+  labs(title = "Texas Tax Fund Distribution by Recipient Type",
+       subtitle='2012 - 2022 Data',
+       y = "Revenue (2022 Adjusted USD)") +
+  theme_minimal() +
+  
+  # Styling
+  theme(legend.position = 'none',  
+        plot.title = element_text(face = "bold", margin = margin(t = 10, b=5)), 
+        plot.subtitle = element_text(margin = margin(b = 20)), 
+        axis.title.y = element_text(face = "bold", angle = 0, hjust = 0, vjust = 0.5, margin = margin(l = 10, r = 10)), 
+        axis.title.x = element_text(face = "bold", margin = margin(t = 10, b = 10))
+  ) +
+  
+  # Adding tick marks every 20 million while ensuring spacing
+  #TODO add more tickmarks, not working for some reason
+
+
+  coord_flip()
+  ggsave(filename = paste0("figures/TX_recipient_bargraph.jpg"), plot = temp_plot, width = 8, height = 6, dpi = 300)
+
+```
+### New Mexico
+```{r state level recipients Colorado}
+
+
+temp_plot <- all_data %>% 
+  filter(State == "NM") %>% 
+  ggplot(aes(x = Recipient, y = (`Amount ($2022)`), fill = Recipient)) +
+  geom_col() +
+  theme_minimal() +
+  labs(title = "New Mexico Tax Fund Distribution by Recipient Type",
+       subtitle='Resources for the Future 2022 Data',
+       y = "Revenue (2022 Adjusted USD)") +
+  theme_minimal() +
+  
+  # Styling
+  theme(legend.position = 'none',  
+        plot.title = element_text(face = "bold", margin = margin(t = 10, b=5)), 
+        plot.subtitle = element_text(margin = margin(b = 20)), 
+        axis.title.y = element_text(face = "bold", angle = 0, hjust = 0, vjust = 0.5, margin = margin(l = 10, r = 10)), 
+        axis.title.x = element_text(face = "bold", margin = margin(t = 10, b = 10))
+  ) +
+  
+  # Adding tick marks every 20 million while ensuring spacing
+  #TODO add more tickmarks, not working for some reason
+
+
+  coord_flip()
+  ggsave(filename = paste0("figures/NM_recipient_bargraph.jpg"), plot = temp_plot, width = 8, height = 6, dpi = 300)
+
+```
+
+
+# TODO
+- Look at nationwide taxes for everything, not just energy and see how much of that is energy taxes
+- Look at phases upstream, downstream, and midstream Upstream for extraction, Midstream for transport and processing, Downstream for power generation, distribution and use). )
+- FIX ALL THE XLXLS WHY DOES THE CENSUS DO THIIIIIS??
+
+
+```{r energy vs all taxes - load}
+library(readr)
+library(purrr)
+
+# Define the list of years
+years <- 2015:2022
+
+# Generate file names
+file_names <- paste0("804_data/", years, "_tax_data.csv")
+
+# Read and combine all CSVs into one dataframe
+census_tax_data <- file_names %>%
+  map_df(~ read_csv(.x) %>% mutate(Year = as.integer(gsub("_tax_data.csv", "", .x))))
+
+# View structure of combined data
+glimpse(census_tax_data)
+
+```
+
+# Getting all the tax revenue data
+```{r cleanin up stat tax data - all revenue}
+#Remember, amounts are in thousands of USD
+
+#Some years have long data (with states as rows instead)
+#2015, 2016, 2017 - ignoring for now
+
+#Replace X's or any chars with zero
+taxes_2018 <- read.csv("804_data/2018_tax_data.csv")
+taxes_2019 <- read.csv("804_data/2019_tax_data.csv")
+taxes_2020 <- read.csv("804_data/2020_tax_data.csv")
+taxes_2021 <- read.csv("804_data/2021_tax_data.csv")
+
+taxes_2018 <- taxes_2018 %>%
+  mutate(across(everything(), ~ ifelse(grepl("X", ., fixed = TRUE), 0, .))) 
+#only keeping the first two rows since we only care about the totals
+taxes_2018 <- taxes_2018[1:1, ]
+  
+taxes_2019 <- taxes_2018 %>%
+  mutate(across(everything(), ~ ifelse(grepl("X", ., fixed = TRUE), 0, .)))
+#only keeping the first two rows since we only care about the totals
+taxes_2019 <- taxes_2019[1:1, ]
+
+taxes_2020 <- taxes_2018 %>%
+  mutate(across(everything(), ~ ifelse(grepl("X", ., fixed = TRUE), 0, .)))
+
+taxes_2020 <- taxes_2020[1:1, ]
+
+taxes_2021 <- taxes_2018 %>%
+  mutate(across(everything(), ~ ifelse(grepl("X", ., fixed = TRUE), 0, .))) 
+
+taxes_2021 <- taxes_2021[1:1, ]
+
+
+```
+
+#Cleaning and normalization tax data, she messy
+```{r}
+
+state_abbreviations <- c(
+  "Alabama" = "AL", "Alaska" = "AK", "Arizona" = "AZ", "Arkansas" = "AR",
+  "California" = "CA", "Colorado" = "CO", "Connecticut" = "CT", "Delaware" = "DE",
+  "Florida" = "FL", "Georgia" = "GA", "Hawaii" = "HI", "Idaho" = "ID",
+  "Illinois" = "IL", "Indiana" = "IN", "Iowa" = "IA", "Kansas" = "KS",
+  "Kentucky" = "KY", "Louisiana" = "LA", "Maine" = "ME", "Maryland" = "MD",
+  "Massachusetts" = "MA", "Michigan" = "MI", "Minnesota" = "MN", "Mississippi" = "MS",
+  "Missouri" = "MO", "Montana" = "MT", "Nebraska" = "NE", "Nevada" = "NV",
+  "New.Hampshire" = "NH", "New.Jersey" = "NJ", "New.Mexico" = "NM", "New.York" = "NY",
+  "North.Carolina" = "NC", "North.Dakota" = "ND", "Ohio" = "OH", "Oklahoma" = "OK",
+  "Oregon" = "OR", "Pennsylvania" = "PA", "Rhode.Island" = "RI", "South.Carolina" = "SC",
+  "South.Dakota" = "SD", "Tennessee" = "TN", "Texas" = "TX", "Utah" = "UT",
+  "Vermont" = "VT", "Virginia" = "VA", "Washington" = "WA", "West.Virginia" = "WV",
+  "Wisconsin" = "WI", "Wyoming" = "WY", "United.States" = "US"
+)
+
+# Pivot the dataframe to get 'state' and 'revenue' columns
+# # Pivot the dataframe to get 'state' and 'revenue' columns
+
+
+# Initialize an empty dataframe to store results
+all_tax_revenue_2018_2021 <- data.frame()
+
+# Loop through the years from 2018 to 2021
+for (year in 2018:2021) {
+  
+  # Construct file name dynamically
+  file_name <- paste0("804_data/", year, "_tax_data.csv")
+  
+  # Read the dataset
+  df <- read.csv(file_name, stringsAsFactors = FALSE)
+  
+  # Pivot and transform the dataframe
+  df_pivoted <- df %>%
+    pivot_longer(cols = -c(Tax.Type, Item), names_to = "state", values_to = "revenue") %>%
+    select(state, revenue) %>%
+    mutate(
+      year = year,
+      revenue = ifelse(is.na(revenue), 0, revenue)
+    )
+
+  # Replace state names with abbreviations
+  df_pivoted <- df_pivoted %>%
+    mutate(state = recode(state, !!!state_abbreviations))
+
+  # Append the processed data to the final dataframe
+  all_tax_revenue_2018_2021 <- bind_rows(all_tax_revenue_2018_2021, df_pivoted)
+}
+
+# Save the final combined dataset
+# write.csv(all_tax_revenue_2018_2021, "All_Years_Taxes_Pivoted.csv", row.names = FALSE)
+state_year_summary <- all_tax_revenue_2018_2021 %>%
+  # Clean the revenue column: remove commas, dollar signs, etc.
+  mutate(revenue = gsub("[,$]", "", revenue)) %>%
+  mutate(revenue = as.numeric(revenue)) %>%
+  filter(!is.na(revenue)) %>%
+  group_by(state, year) %>%
+  summarise(total_revenue = sum(revenue), .groups = "drop") %>%
+  arrange(state, year)
+```
+
+
+# Comparing all taxes vs energy taxes
+```{r energy vs all taxes - analyze}
+
+# Step 1: Filter energy data for 2018–2021 and calculate total energy revenue
+energy_clean <- state_year_revenue %>%
+  rename(year = `Fiscal Year`) %>% 
+  rename(state = State) %>% 
+  filter(year >= 2018 & year <= 2021) %>%
+  mutate(
+    Renewable_Revenue = ifelse(is.na(Renewable_Revenue), 0, Renewable_Revenue),
+    NonRenewable_Revenue = ifelse(is.na(NonRenewable_Revenue), 0, NonRenewable_Revenue),
+    energy_revenue = Renewable_Revenue + NonRenewable_Revenue
+  )
+  
+# Step 2: Join with state-year total revenue summary
+combined_revenue <- state_year_summary %>%
+  filter(year >= 2018 & year <= 2021) %>%
+  left_join(energy_clean, by = c("state", "year")) %>%
+  mutate(
+    energy_revenue = ifelse(is.na(energy_revenue), 0, energy_revenue),  # Handle any missing matches
+    percent_from_energy = (energy_revenue / total_revenue) * 100
+  )
+
+
+```
